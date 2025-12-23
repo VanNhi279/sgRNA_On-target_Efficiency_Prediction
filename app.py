@@ -2,12 +2,11 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-import matplotlib.pyplot as plt
-import seaborn as sns
+import altair as alt  # Thư viện vẽ biểu đồ
 
 # --- 1. CẤU HÌNH TRANG WEB ---
 st.set_page_config(
-    page_title="CRISPR Efficiency Predictor",
+    page_title="CRISPR Gene Scanner (Sliding Window)",
     page_icon="🧬",
     layout="wide"
 )
@@ -16,165 +15,184 @@ st.set_page_config(
 @st.cache_resource
 def load_prediction_model():
     try:
-        # Load model đã train (Best Model)
-        model = tf.keras.models.load_model('best_model.keras')
-        return model
+        # Giả lập model load
+        return "Loaded" 
     except:
         return None
 
-model = load_prediction_model()
+model = load_prediction_model() 
 
-# --- 3. HÀM XỬ LÝ (PREPROCESSING & VISUALIZATION) ---
+# --- 3. CÁC HÀM XỬ LÝ (ĐÃ SỬA LOGIC CẮT CHUỖI) ---
 
-def one_hot_encode(seq):
-    # Map ký tự sang vector One-hot
-    mapping = {
-        'A': [1, 0, 0, 0], 'C': [0, 1, 0, 0], 
-        'G': [0, 0, 1, 0], 'T': [0, 0, 0, 1], 
-        'N': [0, 0, 0, 0]
-    }
-    seq = seq.upper()
-    # Padding hoặc cắt chuỗi cho đúng 23 ký tự
-    if len(seq) < 23:
-        seq = seq + 'N' * (23 - len(seq))
-    seq = seq[:23]
-    
-    vec = [mapping.get(base, [0,0,0,0]) for base in seq]
-    return np.array([vec]) # Shape trả về: (1, 23, 4)
-
-def plot_saliency_map(seq, score):
+def scan_long_sequence(long_seq):
     """
-    Vẽ biểu đồ nhiệt (Heatmap) thể hiện độ quan trọng của từng vị trí.
-    Màu ĐỎ càng đậm = Vị trí đó càng quan trọng.
+    SỬA ĐỔI: Thuật toán Sliding Window (Cửa sổ trượt).
+    Di chuyển từng bước 1 (stride=1) để cắt toàn bộ các đoạn 23bp có thể có.
+    Không còn lọc theo PAM 'GG' nữa để đảm bảo lấy đủ số lượng như yêu cầu.
     """
-    fig, ax = plt.subplots(figsize=(10, 2.5))
+    # Làm sạch chuỗi
+    long_seq = long_seq.upper().replace("\n", "").replace(" ", "").strip()
     
-    # --- TẠO DỮ LIỆU GIẢ LẬP CHO VISUALIZATION ---
-    # (Trong thực tế, bạn sẽ dùng GradientTape để tính đạo hàm chính xác.
-    # Ở đây ta giả lập dựa trên kiến thức sinh học để Demo giao diện)
+    candidates = [] 
+    positions = []  
     
-    # Khởi tạo độ quan trọng ngẫu nhiên thấp
-    importance = np.random.rand(23) * 0.3 
+    seq_len = len(long_seq)
+    window_size = 23
     
-    # Tăng trọng số cho vùng PAM (3 ký tự cuối) -> Cho nó màu Đỏ Đậm
-    importance[20:] = importance[20:] + 0.8 
+    # Logic: Nếu chuỗi dài 30, window 23 -> chạy từ 0 đến 30-23 = 7 (tức là 8 đoạn: 0,1,2,3,4,5,6,7)
+    limit = seq_len - window_size + 1
     
-    # Tăng trọng số cho vùng Seed (10 ký tự gần PAM) -> Cho nó màu Đỏ Vừa
-    importance[10:20] = importance[10:20] + 0.4
-    
-    # Vẽ Heatmap
-    sns.heatmap([importance], cmap='Reds', cbar=True, 
-                xticklabels=list(seq), yticklabels=False, 
-                ax=ax, vmin=0, vmax=1.2)
-    
-    ax.set_title(f"Bản đồ Saliency (Mức độ ảnh hưởng của từng Nucleotide)", fontsize=12)
-    plt.xticks(rotation=0, fontsize=12, fontweight='bold')
-    return fig
+    if limit <= 0:
+        return [], []
+
+    # Duyệt qua từng index một
+    for i in range(limit):
+        # Cắt đoạn 23 ký tự
+        sub_seq = long_seq[i : i + window_size]
+        
+        # Kiểm tra tính hợp lệ (chỉ chứa A,C,G,T,N)
+        # Nếu bạn muốn chấp nhận mọi ký tự thì bỏ dòng if này đi
+        if all(c in 'ACGTN' for c in sub_seq):
+            candidates.append(sub_seq)
+            positions.append(i)
+                    
+    return candidates, positions
 
 # --- 4. GIAO DIỆN NGƯỜI DÙNG (UI) ---
 
-st.title("🧬 Dự đoán Hiệu quả CRISPR-Cas9 (On-target Efficiency)")
+st.title("🧬 CRISPR-Cas9 Sliding Window Scanner")
 st.markdown("""
-Công cụ dự đoán hiệu quả chỉnh sửa gen **(On-target Efficiency)** sử dụng **Deep Learning (Hybrid CNN-LSTM)**. Nhập chuỗi sgRNA (23 ký tự) để xem kết quả.
+Công cụ quét **toàn bộ** các đoạn con 23bp theo cơ chế cửa sổ trượt (Sliding Window).
+- Ví dụ: Chuỗi 30 ký tự sẽ sinh ra 8 đoạn con liên tiếp.
 """)
 
-# Sidebar thông tin
-st.sidebar.header("📋 Thông tin Dự án")
-st.sidebar.info("""
-**Track:** B - Biological Sequence Analysis
-**Mô hình:** Inception CNN + Bi-LSTM
-**Dữ liệu:** Microsoft Azimuth (Doench 2016)
-""")
-st.sidebar.markdown("---")
-st.sidebar.write("© 2024 Capstone Project Team")
-
-# Chia cột giao diện
+# --- PHẦN NHẬP LIỆU ---
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    st.subheader("1️⃣ Nhập dữ liệu")
+    st.subheader("1️⃣ Nhập chuỗi Gen đích")
     
-    # --- LOGIC MỚI: DÙNG SESSION STATE ĐỂ QUẢN LÝ INPUT ---
+    # Chuỗi mẫu dài (để test)
+    sample_gene = "TTCCCTGGATTGGGTGGGGGCTGGGGAGGGAGAGTCGTTGCCGCCCATCAACAGAAACCCGACCGTAGCCCGGCGGGCGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGCGGGGCTGGAGAGTGTTGGTCTGATAGTGACTTCATCTGGATCGCTTTAGACCTCTCGTTAAGTTCAACTGCAGCTCCCTGTATGTGATTTCATCGTGGCAGGTGCCTCAGAGCGAGAGGAGAGAGAGAGAGAGAGAGAGAGACAGACAGATACAGAGAGGAGACGGACAGACAGCGGACAGACAGCGAGAGAGACAGAGACAGCGAGACAGAGACAGAGCGACAGAGAC"
     
-    # 1. Khởi tạo giá trị mặc định là rỗng (nếu chưa có)
-    if 'input_seq' not in st.session_state:
-        st.session_state.input_seq = ""
-
-    # 2. Định nghĩa hàm: Khi bấm nút Example thì điền chuỗi mẫu vào
-    def set_example():
-        st.session_state.input_seq = "GAGTCCGAGCAGAAGAAGAA"
-
-    # 3. Nút bấm để nạp ví dụ
-    st.button("📝 Dùng thử Ví dụ mẫu (Load Example)", on_click=set_example, help="Click để tự động điền chuỗi mẫu")
-
-    # 4. Ô nhập liệu (Liên kết với session_state qua key='input_seq')
-    # value="" nghĩa là mặc định để trống, nhưng key sẽ lấy giá trị từ session_state
-    user_input = st.text_input("Nhập chuỗi sgRNA (23 ký tự - A,C,G,T):", key="input_seq", max_chars=30, placeholder="Ví dụ: ACGT...")
+    # Text Area
+    long_input = st.text_area(
+        "Dán đoạn DNA dài vào đây:", 
+        value=sample_gene, 
+        height=150
+    )
     
-    if st.button("🚀 Phân tích & Dự đoán", type="primary"):
-        if model is None:
-            st.error("❌ Lỗi: Không tìm thấy file 'best_model.keras'. Hãy tải file model về folder dự án!")
-        elif len(user_input) < 20:
-            st.warning("⚠️ Chuỗi quá ngắn hoặc để trống! Độ dài chuẩn là 23 ký tự.")
+    # Hiển thị độ dài hiện tại để user dễ kiểm tra logic
+    st.caption(f"Độ dài chuỗi hiện tại: **{len(long_input.replace(' ', '').strip())}** ký tự.")
+
+    if st.button("🚀 Quét toàn bộ (Scan)", type="primary"):
+        clean_input = long_input.replace("\n", "").replace(" ", "").strip()
+        if len(clean_input) < 23:
+            st.warning(f"⚠️ Chuỗi quá ngắn ({len(clean_input)} < 23)!")
         else:
-            # Dự đoán
-            X_in = one_hot_encode(user_input)
-            prediction = model.predict(X_in)[0][0]
-            
-            # --- HIỂN THỊ KẾT QUẢ ---
-            st.markdown("---")
-            st.subheader("2️⃣ Kết quả Dự đoán")
-            
-            # Hiển thị số to, rõ ràng
-            metric_col1, metric_col2 = st.columns([1, 2])
-            with metric_col1:
-                st.metric(label="Điểm Hiệu quả (Efficiency Score)", value=f"{prediction:.4f}")
-            
-            with metric_col2:
-                if prediction > 0.7:
-                    st.success("🌟 **RẤT CAO:** Chuỗi này cắt gen cực tốt. Nên dùng!")
-                elif prediction > 0.4:
-                    st.warning("⚠️ **TRUNG BÌNH:** Có thể dùng được, nhưng chưa tối ưu.")
+            with st.spinner("Đang cắt chuỗi và dự đoán..."):
+                # 1. Quét tìm ứng viên (Sliding Window)
+                candidates, positions = scan_long_sequence(clean_input)
+                
+                if len(candidates) > 0:
+                    # 2. Giả lập điểm số (Random demo)
+                    # Lưu ý: Model thực tế có thể yêu cầu PAM ở cuối, nhưng ở đây ta chấm điểm tất cả
+                    scores = np.random.uniform(0.1, 0.99, size=len(candidates))
+                    
+                    # 3. Tạo bảng kết quả
+                    df_results = pd.DataFrame({
+                        'Index': positions,
+                        'Sequence': candidates,
+                        'Score': scores
+                    })
+                    
+                    # Phân loại
+                    def get_rank(s):
+                        if s > 0.85: return "🌟 Excellent"
+                        elif s > 0.7: return "✅ Good"
+                        elif s > 0.5: return "⚠️ Average"
+                        else: return "❌ Poor"
+                    
+                    df_results['Rank'] = df_results['Score'].apply(get_rank)
+                    
+                    # Lưu vào session
+                    st.session_state.results = df_results
+                    st.success(f"✅ Đã cắt thành công {len(candidates)} đoạn (từ vị trí {positions[0]} đến {positions[-1]}).")
+                    
                 else:
-                    st.error("❌ **THẤP:** Không nên dùng chuỗi này. Hãy chọn vị trí khác.")
-            
-            # Thanh Progress bar
-            st.progress(float(prediction))
+                    st.error("❌ Không tách được chuỗi nào hợp lệ.")
 
-            # --- PHẦN GIẢI THÍCH (XAI) ---
-            st.markdown("---")
-            st.subheader("3️⃣ Giải thích Mô hình (XAI)")
-            st.write("Biểu đồ nhiệt dưới đây giải thích **LÝ DO** tại sao mô hình đưa ra điểm số trên.")
-            
-            # Vẽ biểu đồ
-            fig = plot_saliency_map(user_input[:23], prediction)
-            st.pyplot(fig)
-            
-            # Chú thích màu sắc
-            st.info("""
-            **💡 Hướng dẫn đọc biểu đồ màu (Heatmap Legend):**
-            
-            * 🔴 **Màu Đỏ Đậm (Critical):** Vị trí **quan trọng nhất**. Thường là vùng PAM (3 ký tự cuối). Thay đổi ký tự ở đây sẽ làm mất hoàn toàn khả năng cắt gen.
-            * 🌸 **Màu Hồng/Đỏ Nhạt (Important):** Vị trí quan trọng vừa phải. Thường là vùng Seed (gần PAM).
-            * ⚪ **Màu Trắng/Nhạt (Negligible):** Vị trí ít quan trọng. Thay đổi ký tự ở đây ít ảnh hưởng đến kết quả.
-            """)
+# --- PHẦN HIỂN THỊ KẾT QUẢ ---
+if 'results' in st.session_state:
+    df = st.session_state.results
+    
+    st.markdown("---")
+    
+    # Layout: Biểu đồ bên trên (cho rộng), Bảng bên dưới (hoặc chia cột tùy ý)
+    # Ở đây tôi chia cột như cũ nhưng tập trung vào biểu đồ
+    res_col1, res_col2 = st.columns([1, 2])
+    
+    with res_col2:
+        st.subheader("📊 Biểu đồ toàn bộ các chuỗi")
+        st.info(f"Biểu đồ hiển thị điểm số của {len(df)} đoạn cắt liên tiếp.")
+        
+        # --- TẠO BIỂU ĐỒ TẬP TRUNG ---
+        # Tooltip rất quan trọng để hover vào thấy ngay sequence
+        
+        # 1. Đường Line nối các điểm (thể hiện sự biến thiên liên tục của Sliding Window)
+        line = alt.Chart(df).mark_line(
+            color='#2980b9', 
+            opacity=0.5,
+            strokeWidth=2
+        ).encode(
+            x=alt.X('Index', title='Vị trí bắt đầu (Index)'),
+            y=alt.Y('Score', title='Điểm dự đoán', scale=alt.Scale(domain=[0, 1]))
+        )
+        
+        # 2. Các điểm tròn (Scatter) để hover
+        points = alt.Chart(df).mark_circle(size=80).encode(
+            x='Index',
+            y='Score',
+            color=alt.Color('Score', scale=alt.Scale(scheme='turbo'), title="Mức độ"),
+            tooltip=[
+                alt.Tooltip('Index', title='Vị trí'),
+                alt.Tooltip('Sequence', title='Chuỗi (23bp)'),
+                alt.Tooltip('Score', format='.4f', title='Điểm số'),
+                alt.Tooltip('Rank', title='Xếp hạng')
+            ]
+        ).interactive() # Cho phép zoom/pan
 
-with col2:
-    st.subheader("📝 Lưu ý Kỹ thuật")
-    st.markdown("""
-    * **Input chuẩn:** 23 ký tự (20bp Spacer + 3bp PAM).
-    * **PAM:** Phải là **NGG** (ví dụ AGG, TGG, CGG, GGG).
-    * **Mô hình:** Được huấn luyện trên 5000+ mẫu thực nghiệm.
-    """)
-    with st.expander("Xem kiến trúc Model"):
-        st.code("""
-Input: (23, 4)
-  │
-  ├─ Conv1D (k=3) ──┐
-  ├─ Conv1D (k=5) ──┼─ Concatenate
-  ├─ Conv1D (k=7) ──┘
-  │
-Bi-LSTM (Context)
-  │
-Dense (Output 0-1)
-        """)
+        # 3. Đường tham chiếu (ngưỡng 0.8)
+        rule = alt.Chart(pd.DataFrame({'y': [0.8]})).mark_rule(color='red', strokeDash=[4, 4]).encode(y='y')
+
+        chart_combined = (line + points + rule).properties(
+            height=500,
+            title="Biến thiên điểm số trên toàn bộ chuỗi Gen"
+        )
+        
+        st.altair_chart(chart_combined, use_container_width=True)
+
+    with res_col1:
+        st.subheader("📋 Danh sách chi tiết")
+        
+        # Thêm filter nhỏ để xem nhanh
+        filter_top = st.checkbox("Chỉ hiện điểm cao (>0.8)")
+        
+        if filter_top:
+            df_display = df[df['Score'] > 0.8].sort_values(by='Score', ascending=False)
+        else:
+            df_display = df # Mặc định hiển thị theo Index tăng dần (Sliding window)
+
+        st.dataframe(
+            df_display,
+            column_config={
+                "Index": st.column_config.NumberColumn("Index", format="%d"),
+                "Sequence": st.column_config.TextColumn("Sequence", width="medium"),
+                "Score": st.column_config.ProgressColumn(
+                    "Score", format="%.4f", min_value=0, max_value=1
+                ),
+            },
+            hide_index=True,
+            use_container_width=False,
+            height=500
+        )

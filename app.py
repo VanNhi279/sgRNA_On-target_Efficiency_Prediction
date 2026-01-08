@@ -91,12 +91,57 @@ st.markdown("<p style='color: #8b949e;'>Hệ thống XAI-to-NLG dự đoán hi�
 # Khai báo dữ liệu mẫu
 sample_dna = "TTCCCTGGATTGGGTGGGGGCTGGGGAGGGAGAGTCGTTGCCGCCCATCAACAGAAACCCGACCGTAGCCCGGCGGGCGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGCGGGGCTGGAGAGTGTTGGTCTGATAGTGACTTCATCTGGATCGCTTTAGACCTCTCGTTAAGTTCAACTGCAGCTCCCTGTATGTGATTTCATCGTGGCAGGTGCCTCAGAGCGAGAGGAGAGAGAGAGAGAGAGAGAGAGAGACAGACAGATACAGAGAGGAGACGGACAGACAGCGGACAGACAGCGAGAGAGACAGAGACAGCGAGACAGAGACAGAGCGACAGAGAC"
 
+# --- CALLBACK FUNCTIONS ---
+def load_sample():
+    """Callback function để load sample DNA vào session state"""
+    st.session_state["dna_input_area"] = sample_dna
+
+def process_file_upload():
+    """Callback function để xử lý file upload và cập nhật session state"""
+    # Lấy file từ session state (file được lưu khi on_change trigger)
+    uploaded_file = st.session_state.get('file_uploader')
+    
+    if uploaded_file is not None:
+        try:
+            # Đọc nội dung file
+            content = uploaded_file.read().decode('utf-8')
+            
+            # Xử lý file FASTA (bỏ qua dòng header bắt đầu bằng >)
+            if uploaded_file.name.endswith(('.fasta', '.fa')):
+                lines = [line.strip() for line in content.split('\n') if line.strip() and not line.strip().startswith('>')]
+                dna_input = ''.join(lines)
+            # Xử lý file CSV (lấy cột đầu tiên hoặc toàn bộ nội dung)
+            elif uploaded_file.name.endswith('.csv'):
+                try:
+                    # Reset file pointer và đọc lại dưới dạng CSV
+                    uploaded_file.seek(0)
+                    df_upload = pd.read_csv(uploaded_file)
+                    # Nếu có nhiều cột, lấy cột đầu tiên, nếu không thì lấy toàn bộ nội dung
+                    if len(df_upload.columns) > 0:
+                        dna_input = ''.join(df_upload.iloc[:, 0].astype(str).tolist())
+                    else:
+                        dna_input = content.replace('\n', '').replace(',', '').replace(' ', '')
+                except:
+                    dna_input = content.replace('\n', '').replace(',', '').replace(' ', '')
+            # Xử lý file TXT
+            else:
+                dna_input = content.replace('\n', '').replace(' ', '')
+            
+            # Cập nhật session state
+            st.session_state["dna_input_area"] = dna_input
+            st.session_state["file_upload_success"] = f"✅ Đã tải file thành công! ({len(dna_input)} ký tự)"
+        except Exception as e:
+            st.session_state["file_upload_error"] = f"⚠️ Lỗi khi đọc file: {str(e)}"
+
+# Khởi tạo session state nếu chưa có
+if 'dna_input_area' not in st.session_state:
+    st.session_state["dna_input_area"] = ""
+
 with st.container():
     col_in, col_sm = st.columns([3, 1])
     with col_sm:
         st.write("### 📂 Sample Data")
-        if st.button("Load DNA Example"):
-            st.session_state["dna_input_area"] = sample_dna
+        st.button("Load DNA Example", on_click=load_sample)
     
     with col_in:
         input_tabs = st.tabs(["✍️ Nhập văn bản", "📂 Upload File"])
@@ -105,37 +150,25 @@ with st.container():
             dna_input = st.text_area("🧬 Sequence Input (DNA):", key="dna_input_area", height=120, placeholder="Dán trình tự DNA mục tiêu vào đây...")
         
         with input_tabs[1]:
-            uploaded_file = st.file_uploader("Chọn file để upload (FASTA, TXT, CSV):", type=['fasta', 'fa', 'txt', 'csv'], key="file_uploader")
-            if uploaded_file is not None:
-                # Đọc nội dung file
-                content = uploaded_file.read().decode('utf-8')
-                
-                # Xử lý file FASTA (bỏ qua dòng header bắt đầu bằng >)
-                if uploaded_file.name.endswith(('.fasta', '.fa')):
-                    lines = [line.strip() for line in content.split('\n') if line.strip() and not line.strip().startswith('>')]
-                    dna_input = ''.join(lines)
-                # Xử lý file CSV (lấy cột đầu tiên hoặc toàn bộ nội dung)
-                elif uploaded_file.name.endswith('.csv'):
-                    try:
-                        df_upload = pd.read_csv(uploaded_file)
-                        # Nếu có nhiều cột, lấy cột đầu tiên, nếu không thì lấy toàn bộ nội dung
-                        if len(df_upload.columns) > 0:
-                            dna_input = ''.join(df_upload.iloc[:, 0].astype(str).tolist())
-                        else:
-                            dna_input = content.replace('\n', '').replace(',', '').replace(' ', '')
-                    except:
-                        dna_input = content.replace('\n', '').replace(',', '').replace(' ', '')
-                # Xử lý file TXT
-                else:
-                    dna_input = content.replace('\n', '').replace(' ', '')
-                
-                # Cập nhật session state để hiển thị trong text area
-                st.session_state["dna_input_area"] = dna_input
-                st.success(f"✅ Đã tải file thành công! ({len(dna_input)} ký tự)")
+            uploaded_file = st.file_uploader(
+                "Chọn file để upload (FASTA, TXT, CSV):", 
+                type=['fasta', 'fa', 'txt', 'csv'], 
+                key="file_uploader",
+                on_change=process_file_upload
+            )
+            
+            # Hiển thị thông báo thành công hoặc lỗi nếu có
+            if 'file_upload_success' in st.session_state:
+                st.success(st.session_state["file_upload_success"])
+                # Xóa thông báo sau khi hiển thị để tránh hiển thị lại
+                del st.session_state["file_upload_success"]
+            
+            if 'file_upload_error' in st.session_state:
+                st.error(st.session_state["file_upload_error"])
+                # Xóa thông báo sau khi hiển thị để tránh hiển thị lại
+                del st.session_state["file_upload_error"]
         
-        # Lấy giá trị dna_input từ session state (từ tab nhập tay hoặc từ file upload)
-        if 'dna_input_area' not in st.session_state:
-            st.session_state["dna_input_area"] = ""
+        # Lấy giá trị dna_input từ session state
         dna_input = st.session_state.get("dna_input_area", "")
 
     if st.button("🚀 EXECUTE DEEP ANALYSIS"):
